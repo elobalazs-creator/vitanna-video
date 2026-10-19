@@ -14,7 +14,7 @@ from pathlib import Path
 
 from renderer import render
 
-WORKER_VERSION = "2026-10-19-diagnostics-1"
+WORKER_VERSION = "2026-10-19-auth-1"
 
 
 @contextmanager
@@ -51,6 +51,18 @@ def failure_details(exc):
             504: "A kiszolgáló válaszideje lejárt.",
         }
         details["message"] = hints.get(exc.code, "A szerver HTTP-hibát jelzett.")
+        if exc.headers:
+            if exc.headers.get("X-Vitanna-Bridge-Version") == "2026-10-19-auth-1":
+                details["bridge_version"] = "2026-10-19-auth-1"
+            reason = exc.headers.get("X-Vitanna-Auth-Error", "")
+            auth_hints = {
+                "missing": "A hitelesítési fejlécek nem érkeztek meg a PHP-hoz.",
+                "mismatch": "A PHP-hoz megérkezett hitelesítési adat eltér a weboldalon tárolt kulcstól.",
+                "not_configured": "A weboldalon nem található beállított Render-kapcsolati kulcs.",
+            }
+            if exc.code == 401 and reason in auth_hints:
+                details["auth_error"] = reason
+                details["message"] = auth_hints[reason]
     elif isinstance(exc, json.JSONDecodeError):
         details["message"] = "A szerver válasza nem érvényes JSON."
     elif isinstance(exc, urllib.error.URLError):
@@ -94,6 +106,12 @@ class Bridge:
         self.token = token
         self.opener = urllib.request.build_opener(NoRedirect)
 
+    def auth_headers(self):
+        # The same secret is sent only to the validated HTTPS origin. The
+        # dedicated header supports hosts that strip Authorization in CGI.
+        return {"Authorization": "Bearer " + self.token,
+                "X-Vitanna-Worker-Token": self.token}
+
     def asset_url(self, value):
         if not isinstance(value, str):
             raise ValueError("Hibás média-URL.")
@@ -112,14 +130,14 @@ class Bridge:
         return result
 
     def post(self, payload):
-        request = urllib.request.Request(self.url, data=json.dumps(payload).encode(), headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json", "Accept": "application/json"}, method="POST")
+        request = urllib.request.Request(self.url, data=json.dumps(payload).encode(), headers={**self.auth_headers(), "Content-Type": "application/json", "Accept": "application/json"}, method="POST")
         with self.opener.open(request, timeout=60) as response:
             return self.json_response(response)
 
     def download(self, spec, target, limit):
         if not isinstance(spec, dict) or not re.fullmatch(r"[0-9a-f]{64}", spec.get("sha256", "")):
             raise ValueError("Minden távoli médiához SHA-256 ellenőrzőösszeg szükséges.")
-        request = urllib.request.Request(self.asset_url(spec.get("url")), headers={"Authorization": "Bearer " + self.token}, method="GET")
+        request = urllib.request.Request(self.asset_url(spec.get("url")), headers=self.auth_headers(), method="GET")
         digest, total = hashlib.sha256(), 0
         with self.opener.open(request, timeout=60) as response, target.open("xb") as out:
             length = response.headers.get("Content-Length")
@@ -140,7 +158,7 @@ class Bridge:
 
     def complete(self, job, path, report):
         query = urllib.parse.urlencode({"action": "complete", "job_id": job["job_id"], "revision": job["revision"]})
-        headers = {"Authorization": "Bearer " + self.token, "X-Vitanna-Lease": job["lease_token"], "X-Content-SHA256": report["sha256"], "Content-Type": "video/mp4", "Content-Length": str(path.stat().st_size), "Accept": "application/json"}
+        headers = {**self.auth_headers(), "X-Vitanna-Lease": job["lease_token"], "X-Content-SHA256": report["sha256"], "Content-Type": "video/mp4", "Content-Length": str(path.stat().st_size), "Accept": "application/json"}
         # File-like body streams the upload, rather than loading the video into RAM.
         with path.open("rb") as body:
             request = urllib.request.Request(self.url + "?" + query, data=body, headers=headers, method="POST")
