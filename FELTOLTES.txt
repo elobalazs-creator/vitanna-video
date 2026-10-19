@@ -1,0 +1,25 @@
+VitAnna – Render-előkészítés, mappák nélküli feltöltés
+2026. október 19.
+
+A csomagban 6 különálló fájl van. Mind a hatot töltsd fel a GitHub
+elobalazs-creator/vitanna-video tároló főkönyvtárába:
+Dockerfile, render.yaml, worker.py, renderer.py, captions.py, FELTOLTES.txt.
+
+1. A korábbi, még el nem mentett feltöltést hagyd el, és nyisd meg újra:
+   https://github.com/elobalazs-creator/vitanna-video/upload
+2. A choose your files gombbal válaszd ki ennek a kibontott csomagnak
+   mind a 6 fájlját. Egyik sem almappa.
+3. Várd meg a feltöltést, majd Commit changes.
+4. A tároló főoldalán ellenőrizd, hogy a Dockerfile, render.yaml és
+   a három .py fájl közvetlenül látható.
+
+A program alapból RUN_MODE=disabled állapotban van.
+A napi automatizáláshoz a VitAnna-oldali összekötés még szükséges.
+Ez a csomag a GitHubra való. Render-telepítés még nem történt.
+A Render-szolgáltatás létrehozását az összekötés és a beállítások
+ellenőrzése után végezzük el.
+
+A videóprogram az eredeti előkészítő csomaggal azonos. A Dockerfile
+most a három Python-fájlt közvetlenül a főkönyvtárból másolja be.
+A bemutató és a fejlesztői tesztek az eredeti csomagban maradnak.
+A program nem tartalmaz OpenAI-, ElevenLabs- vagy szerver-hozzáférési kulcsot.
