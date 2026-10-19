@@ -1,0 +1,14 @@
+{
+  "status": "ready",
+  "duration_seconds": 12.04,
+  "width": 1920,
+  "height": 1080,
+  "video_codec": "h264",
+  "audio_codec": "aac",
+  "image_count": 3,
+  "caption_count": 3,
+  "bytes": 122239,
+  "sha256": "f39cf80b1318c0a5da7853d5f19040d82ac3d5a8c0d1801bb6ce396e94fe3d01",
+  "processing_seconds": 5.737,
+  "source_audio_sha256": "8e951d9f6f71597473d59310e4f306683ab01e751dcd5c34130e64d850353f72"
+}

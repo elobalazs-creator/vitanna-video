@@ -1,0 +1,21 @@
+# Előkészítő konfiguráció. A Blueprint alkalmazása már fizetős Render-erőforrást hoz létre.
+# RUN_MODE=disabled mellett a program azonnal kilép; a havi minimumdíj így is fennállhat.
+services:
+  - type: cron
+    name: vitanna-video-worker
+    runtime: docker
+    plan: 1c-2g
+    region: frankfurt
+    schedule: "*/15 * * * *"
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    autoDeployTrigger: off
+    envVars:
+      - key: RUN_MODE
+        value: disabled
+      - key: TZ
+        value: Europe/Budapest
+      - key: VITANNA_BRIDGE_URL
+        sync: false
+      - key: VITANNA_WORKER_TOKEN
+        sync: false
