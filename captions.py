@@ -103,7 +103,7 @@ def stamp(seconds):
     return f"{h}:{m:02}:{s:02}.{cs:02}"
 
 
-def write_ass(path, captions, title, duration, width, height):
+def write_ass(path, captions, title, duration, width, height, title_top=190):
     scale = height / 1080
     title = clean_text(title)
     if len(title) > 180:
@@ -112,7 +112,7 @@ def write_ass(path, captions, title, duration, width, height):
         return r"\N".join(textwrap.wrap(text, width=length, break_long_words=True, break_on_hyphens=False))
     styles = [
         f"Style: Brand,DejaVu Sans,{round(28*scale)},&H00E4DFCE,&H00FFFFFF,&H002E3028,&H99302C24,0,0,0,0,100,100,0,0,1,1,0,8,{round(90*scale)},{round(90*scale)},{round(34*scale)},1",
-        f"Style: Title,DejaVu Sans,{round(44*scale)},&H00FFFFFF,&H00FFFFFF,&H002A3028,&H99302C24,-1,0,0,0,100,100,0,0,1,2,1,8,{round(120*scale)},{round(120*scale)},{round(83*scale)},1",
+        f"Style: Title,DejaVu Sans,{round(44*scale)},&H00FFFFFF,&H00FFFFFF,&H002A3028,&H99302C24,-1,0,0,0,100,100,0,0,1,2,1,7,{round(56*scale)},{round(56*scale)},{round(title_top*scale)},1",
         f"Style: Caption,DejaVu Sans,{round(46*scale)},&H00FFFFFF,&H00FFFFFF,&H002A3028,&HC0222923,0,0,0,0,100,100,0,0,3,3,0,2,{round(110*scale)},{round(110*scale)},{round(80*scale)},1",
     ]
     rows = ["[Script Info]", "ScriptType: v4.00+", f"PlayResX: {width}", f"PlayResY: {height}", "WrapStyle: 0", "ScaledBorderAndShadow: yes", "", "[V4+ Styles]", "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding", *styles, "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"]

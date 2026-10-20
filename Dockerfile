@@ -4,6 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY worker.py renderer.py captions.py /app/
+COPY vitanna-logo.png /app/vitanna-logo.png
 RUN useradd --create-home --uid 10001 vitanna && mkdir /work && chown vitanna:vitanna /work
 USER vitanna
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 RUN_MODE=disabled

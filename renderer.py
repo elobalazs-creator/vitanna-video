@@ -14,6 +14,113 @@ from captions import from_alignment, parse_srt, validate_captions, write_ass
 AUDIO_PROFILE = "vitanna-loudness-v1"
 TARGET_LUFS = -18.0
 TRUE_PEAK_DBTP = -2.0
+BRANDING_PROFILE = "vitanna-logo-v1"
+
+# Approved November 2026 cover assets, including their small versions.
+BRANDED_COVERS = frozenset({
+    "4fd7e0b5348dda8f7d21fc8e9c6bac6783020d435b365371f6b91a9b64a4d973",  # nov-2026-01-small.jpg
+    "2d602a1e3f5aebb747e943bbd62632f191e21d56f695d5f99e48515091f25f3e",  # nov-2026-01.jpg
+    "98d04c82588aebaa26d13f16d7591a1cfb89fa09e4063de0bf73ff421acd279d",  # nov-2026-02-small.jpg
+    "827ab324783ad60d799913f71ddcb20ef017e72b5a5774c757bc88d5ac18428a",  # nov-2026-02.jpg
+    "095ca10b8aa84dedac6c91b67f2f7176da39125aa172bf3fb02c491851717952",  # nov-2026-03-small.jpg
+    "11ddb45e668e0f3c9686e13bfad6fca85b26b715cd35324306bac9cd59c08880",  # nov-2026-03.jpg
+    "ddbbd39c3ef4c7a30ab818c4acb0fe09e02ffa8dbe3e675a7559c0ff38a05c8e",  # nov-2026-04-small.jpg
+    "c846a8a78aeb68f25bed88e4788d0e31e2d6ef780ee2d8f0c99cfc8faf38e026",  # nov-2026-04.jpg
+    "838e7d1190e53a730e8efb9b5c21730826c1df2749fd469ce8b506ef65365f34",  # nov-2026-05-small.jpg
+    "a0375ddbaeaa9dba7208beb654a35b0d778fad0627f6d28bd5ad20a2bb81da67",  # nov-2026-05.jpg
+    "d35b9b7b7f97889073eab00b213b1573c6544e8781c4e3d64f005a139ae193bc",  # nov-2026-06-small.jpg
+    "01c85b9d7679704fc59861353f5498ff80c168e11304853d0cbc750539e87a39",  # nov-2026-06.jpg
+    "4c5cf92cf706636a2789380fe170ca610508768cd682704739ce32844403150a",  # nov-2026-07-small.jpg
+    "e93829947633e8b8dae7f988930a76f3bde8dafe33961d746e9385d43f393d8e",  # nov-2026-07.jpg
+    "2dd1ad0b4da90b8748fd72c4b939fa92abdf7a06604f24bd3f0c42d27f7a697a",  # nov-2026-08-small.jpg
+    "b81c5af73d7b5d69c88e22dc8962059326a1cd27b2a4c27208ebfe24e556a1b5",  # nov-2026-08.jpg
+    "3971bef9211d60028b4d2c53d6a657e2491e6cee25274511e328006bb1c009bc",  # nov-2026-09-small.jpg
+    "c32390b03af6ed428011bb8b23e14df0c08be55310cb79b9c933fb3db7ddbf93",  # nov-2026-09.jpg
+    "35766508b20b55cfcab465414a65c0fe26a6385c112b93d481543984e766a5bf",  # nov-2026-10-small.jpg
+    "f4560a870e11b3d624777a53ded91421b9509501736badef8264faa3724c9e5d",  # nov-2026-10.jpg
+    "e52ec8a08a19f5e5585607bc8ccb346a5e10272868346f9266c3c7b066eff4f2",  # nov-2026-11-small.jpg
+    "cc80811dbb91fae5f2c60e33d4b5123fa1d147e0c13b296db0c43c885f4809a8",  # nov-2026-11.jpg
+    "ec6ce264e948b6abdd44b2d94c7e63f3fabe9261c241947ec1cc4b41e824864b",  # nov-2026-12-small.jpg
+    "a6a1d955dff77dccbdf9f761f20666c340c131f091c8d4f6834e18dfea23b2be",  # nov-2026-12.jpg
+    "d712ca4d9403e0baa6957431dc5f9e13692c4b8bc48ab7de912ca12efc27dd77",  # nov-2026-13-small.jpg
+    "82ca76d64ee14dbb6b9a24b1c29779373e6ea8147010a95cc89ae3257bd86240",  # nov-2026-13.jpg
+    "c5e0c044a0162f4fa3af46af0d1cd679a989dabc6e23f4608e4b8e6f3effbd01",  # nov-2026-14-small.jpg
+    "c85cde8db23af0bdc20404cdf647a59c388bd2301584dbc81ebcd57ae8fac90d",  # nov-2026-14.jpg
+    "069f72fe2ea731c309234bb33cdca6a0d457771fd8df38665780ae72ca22298c",  # nov-2026-15-small.jpg
+    "8f99ad15cc90a7c7d10720efd6beee040a5eba915ad441367fcf1afc74317b5c",  # nov-2026-15.jpg
+    "e97609ff2fd22048ccde5887e98e4ba09ed9bff57e72d7b7d999358248be62d1",  # nov-2026-16-small.jpg
+    "c0b2d31d1f58f10f809624e34fd49e188e7b69e25d410b31dcce900a49555552",  # nov-2026-16.jpg
+    "e8dc1b19c2e3f5539eb067946777c8a6efc5c8cf578153ffef53dcc29fa0b9ed",  # nov-2026-17-small.jpg
+    "e13a7ff6183e6af0cfed4840751fe7328e738c840b13cc52fbe5aed754eb4ee3",  # nov-2026-17.jpg
+    "572aa97586d938bd6ec39576cc03e74f5538890816fe21f8156ac256168eabb7",  # nov-2026-18-small.jpg
+    "81cdfa4d7c8644764ef34695c86187d123e6acd8080e10551ccfeca5ec7a1b85",  # nov-2026-18.jpg
+    "1fb2c31f492b97072b84af0c8d14c39fe711603dc3cea4996583c2f26bdddf5e",  # nov-2026-19-small.jpg
+    "114448cdc251da6e437f39fe076bf7bd699fbaac8a83e821946fce2057a71170",  # nov-2026-19.jpg
+    "4f1ec6330ff26655c3779729dfd054aaf8eab2a1644b966fcfaf405a360c0831",  # nov-2026-20-small.jpg
+    "7ea4b55ae4e4365bb172534293dcb322d61dc8fd21de641c3f9094604fbaf00d",  # nov-2026-20.jpg
+    "7f6a536e08a6cdb4d33c7166f20741a348a1252530cda3f1cdefa8dc78151896",  # nov-2026-21-small.jpg
+    "0fa14a3680c5d30593ef5b76431434370b313e459df33191e62f48fda4679aa2",  # nov-2026-21.jpg
+    "9396b7f89c5cf4d2b51fd6168d09be1bad0e425c2feb6a407c8819912209e88a",  # nov-2026-22-small.jpg
+    "53527a68d0a432aa118b1c0239d6c0e10b67d729495518fd2834b8c1c08a3fba",  # nov-2026-22.jpg
+    "e1770e80c5527c64233b632e0ae8c7d052b617d57ba4b9dd6440aeecf3042ce7",  # nov-2026-23-small.jpg
+    "075514734e64fccd374ec27a499b79f0f2bb555bdba633836b531bc9129b70b2",  # nov-2026-23.jpg
+    "b98e955da106865f39e7bb8a7465d4ecadab45076c6291605e9c18b9bf718511",  # nov-2026-24-small.jpg
+    "f8f3f809ca2e3802e48663db725e84993927af561939470a766813e5a5a63612",  # nov-2026-24.jpg
+    "9e72aae0c8dad6c17e756c490d219c996c3531017f0d59b234d8409f6a9d72d0",  # nov-2026-25-small.jpg
+    "66e3f98802b640f537bc08342f3e14abbaba3c9567282c55014472a12b01c4cd",  # nov-2026-25.jpg
+    "52169a511a9b11d68f2638b0660b1b590afde71eb607e604de9a594e0c71d890",  # nov-2026-26-small.jpg
+    "040f61d724c017c8ce70cd188d1c3f1ff6014ed3c19757736c631129749f3ae3",  # nov-2026-26.jpg
+    "0296915d4a768cd11a9ecbcf7afdd0d7fc0c81a92b932fb3d1dc761f2abc9eab",  # nov-2026-27-small.jpg
+    "aa798978f646b8f6f373a737bc5e09bc10465b870bdbaa11403feb71bd39bd63",  # nov-2026-27.jpg
+    "3ae8e899d8407665a6e6300250e606910c2afad51571ef8e233df932099760a8",  # nov-2026-28-small.jpg
+    "d047e34339a07435ade4e64ef65f3a2ca53d0edf7371f545dc4df07aa245b937",  # nov-2026-28.jpg
+    "51e3ca354acdc5596948abb394c3495d3eafb65db78778e693cd746abef7fec4",  # nov-2026-29-small.jpg
+    "de2aceccc765f1e04d9157845a5b8d75b9c2d9161b5b92ba84612a1d99cfa440",  # nov-2026-29.jpg
+    "1efd31f8225668fccfb6cba5d64a65ae3c26a6737d7cbd8828cfa277bc0dd4e5",  # nov-2026-30-small.jpg
+    "93fa9c92728ea956c8b1e5b174466c7474feebdaa8c2f498987e854f15844bc4",  # nov-2026-30.jpg
+})
+
+
+def branding_logo():
+    """The deployment supplies the same brand asset for every daily video."""
+    path = Path(__file__).resolve().with_name("vitanna-logo.png")
+    if not path.is_file() or not 0 < path.stat().st_size <= 2 * 1024 * 1024:
+        raise ValueError("Hiányzik a vitanna-logo.png. A logót és a Dockerfile-t is töltsd fel, majd indíts új buildet.")
+    info = probe(path)
+    stream = next((s for s in info["streams"] if s["codec_type"] == "video"), {})
+    if stream.get("codec_name") != "png" or not 0 < stream.get("width", 0) * stream.get("height", 0) <= 4000000:
+        raise ValueError("A VitAnna-logó érvénytelen PNG-fájl.")
+    return path
+
+
+def branded_slide(image, logo, width, height, output, already_branded=False):
+    """Composite once per still image, before the timed captions are encoded."""
+    if already_branded:
+        run(["ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file,pipe",
+             "-i", str(image), "-vf",
+             f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x203A31,setsar=1",
+             "-frames:v", "1", "-threads", "1", str(output)])
+        return
+    factor = height / 1080
+    x, y = round(56 * factor), round(44 * factor)
+    box_w, box_h = round(312 * factor), round(126 * factor)
+    logo_w, logo_h = round(280 * factor), round(94 * factor)
+    inset_x, inset_y = round(16 * factor), round(16 * factor)
+    filters = (
+        f"[0:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x203A31,setsar=1,"
+        f"drawbox=x={x}:y={y}:w={box_w}:h={box_h}:color=0xF8F7F1@0.94:t=fill[background];"
+        f"[1:v]scale={logo_w}:{logo_h}:force_original_aspect_ratio=decrease,"
+        f"format=rgba,pad={logo_w}:{logo_h}:(ow-iw)/2:(oh-ih)/2:color=0x00000000[logo];"
+        f"[background][logo]overlay=x={x + inset_x}:y={y + inset_y}:format=auto,"
+        "format=rgb24[branded]"
+    )
+    run(["ffmpeg", "-nostdin", "-v", "error", "-filter_complex_threads", "1",
+         "-protocol_whitelist", "file,pipe", "-i", str(image),
+         "-protocol_whitelist", "file,pipe", "-i", str(logo),
+         "-filter_complex", filters, "-map", "[branded]", "-frames:v", "1",
+         "-threads", "1", str(output)])
 
 
 def audio_command(args, timeout=180):
@@ -180,6 +287,11 @@ def render(manifest_path, output_path):
         raise ValueError("A kimenet .mp4 fájl legyen.")
     if output_path.exists():
         raise FileExistsError("A kész videót nem írjuk felül; adj új kimeneti fájlnevet.")
+    logo = branding_logo()
+    # November's delivered covers already contain the approved logo. Match exact
+    # bytes, never a filename or a guess, so an unbranded replacement gets a logo.
+    already_branded = [sha256(image) in BRANDED_COVERS for image in images]
+    title_top = 360 if any(already_branded) else 190
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="vitanna-", dir=output_path.parent) as temp:
         work = Path(temp)
@@ -193,12 +305,12 @@ def render(manifest_path, output_path):
         # through an fps filter can otherwise queue thousands of raw Full HD frames.
         for index, image in enumerate(images):
             filename = f"slide-{index:02}.png"
-            run(["ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file,pipe", "-i", str(image), "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x203A31,setsar=1", "-frames:v", "1", "-threads", "1", filename], cwd=work)
+            branded_slide(image, logo, width, height, work / filename, already_branded[index])
             frames = basic_frames + (1 if index < extra_frames else 0)
             start, end = offset_frames / fps, (offset_frames + frames) / fps
             segment_captions = [{"start": max(c["start"], start) - start, "end": min(c["end"], end) - start, "text": c["text"]} for c in captions if min(c["end"], end) - max(c["start"], start) >= 0.01]
             subtitle_file = f"captions-{index:02}.ass"
-            write_ass(work / subtitle_file, segment_captions, job.get("title", ""), frames / fps, width, height)
+            write_ass(work / subtitle_file, segment_captions, job.get("title", ""), frames / fps, width, height, title_top=title_top)
             segment_file = f"segment-{index:02}.mp4"
             remaining = max(1, int(1800 - (time.monotonic() - began)))
             run(["ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file,pipe", "-loop", "1", "-framerate", "25", "-i", filename, "-vf", f"ass={subtitle_file},format=yuv420p", "-frames:v", str(frames), "-an", "-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage", "-crf", "23", "-threads", "2", segment_file], cwd=work, timeout=remaining)
@@ -222,6 +334,10 @@ def render(manifest_path, output_path):
         loudness.update(check_normalized(video, duration))
         result = {"status": "ready", "duration_seconds": round(actual_duration, 3), "width": width, "height": height, "video_codec": "h264", "audio_codec": "aac", "image_count": len(images), "caption_count": len(captions), "bytes": video.stat().st_size, "sha256": sha256(video), "processing_seconds": round(time.monotonic() - began, 3), "source_audio_sha256": sha256(audio)}
         result["audio_loudness"] = loudness
+        result["branding"] = {"profile": BRANDING_PROFILE, "logo_sha256": sha256(logo),
+                              "placement": "top_left", "all_slides": True,
+                              "added_to_slides": already_branded.count(False),
+                              "existing_on_slides": already_branded.count(True)}
         # Atomic, no-clobber publication on the same filesystem; retries cannot replace a file.
         os.link(video, output_path)
     output_path.with_suffix(".report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
