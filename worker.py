@@ -12,9 +12,9 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from renderer import render
+from renderer import render, normalize_mp3, AUDIO_PROFILE
 
-WORKER_VERSION = "2026-10-19-auth-1"
+WORKER_VERSION = "2026-10-20-loudness-1"
 
 
 @contextmanager
@@ -134,10 +134,13 @@ class Bridge:
         with self.opener.open(request, timeout=60) as response:
             return self.json_response(response)
 
-    def download(self, spec, target, limit):
+    def download(self, spec, target, limit, lease=None):
         if not isinstance(spec, dict) or not re.fullmatch(r"[0-9a-f]{64}", spec.get("sha256", "")):
             raise ValueError("Minden távoli médiához SHA-256 ellenőrzőösszeg szükséges.")
-        request = urllib.request.Request(self.asset_url(spec.get("url")), headers=self.auth_headers(), method="GET")
+        headers = self.auth_headers()
+        if lease is not None:
+            headers["X-Vitanna-Lease"] = lease
+        request = urllib.request.Request(self.asset_url(spec.get("url")), headers=headers, method="GET")
         digest, total = hashlib.sha256(), 0
         with self.opener.open(request, timeout=60) as response, target.open("xb") as out:
             length = response.headers.get("Content-Length")
@@ -166,6 +169,56 @@ class Bridge:
                 result = self.json_response(response)
         if result.get("ok") is not True or result.get("job_id") != job["job_id"] or result.get("sha256") != report["sha256"] or result.get("status") != "ready":
             raise ValueError("A szerver nem igazolta vissza a teljes videó átvételét.")
+
+    def complete_audio(self, job, path, report):
+        query = urllib.parse.urlencode({"action": "complete", "job_id": job["job_id"]})
+        headers = {**self.auth_headers(), "X-Vitanna-Lease": job["lease_token"],
+            "X-Content-SHA256": report["sha256"], "Content-Type": "audio/mpeg",
+            "Content-Length": str(path.stat().st_size), "Accept": "application/json",
+            "X-Vitanna-Audio-Profile": AUDIO_PROFILE,
+            "X-Vitanna-Audio-Lufs": str(report["integrated_lufs"]),
+            "X-Vitanna-Audio-Peak": str(report["true_peak_dbtp"])}
+        with path.open("rb") as body:
+            request = urllib.request.Request(self.url + "?" + query, data=body,
+                                             headers=headers, method="POST")
+            with self.opener.open(request, timeout=180) as response:
+                result = self.json_response(response)
+        if result.get("ok") is not True or result.get("job_id") != job["job_id"] or result.get("sha256") != report["sha256"] or result.get("status") != "ready":
+            raise ValueError("A szerver nem igazolta vissza a javított MP3 átvételét.")
+
+
+def normalize_daily(client):
+    """One ready MP3 per tick, independently of video eligibility. No TTS calls."""
+    job = None
+    try:
+        with phase("audio_claim"):
+            response = client.post({"action": "claim", "profile": AUDIO_PROFILE})
+            if "job" not in response:
+                raise ValueError("Hiányzik a job mező a szerverválaszból.")
+            job = response["job"]
+        if job is None:
+            return
+        if not isinstance(job, dict) or not re.fullmatch(r"[0-9a-f]{64}", job.get("job_id", "")) or not re.fullmatch(r"[0-9a-f]{64}", job.get("lease_token", "")):
+            job = None
+            raise ValueError("Hibás hangjavítási feladat.")
+        with tempfile.TemporaryDirectory(prefix="vitanna-audio-worker-") as temp:
+            root = Path(temp)
+            with phase("audio_download"):
+                client.download(job.get("audio"), root / "source.mp3", 100 * 1024 * 1024, lease=job["lease_token"])
+            with phase("audio_normalize"):
+                report = normalize_mp3(root / "source.mp3", root / "normalized.mp3")
+            with phase("audio_upload"):
+                client.complete_audio(job, root / "normalized.mp3", report)
+            log("audio_ready", job_id=job["job_id"], profile=AUDIO_PROFILE,
+                integrated_lufs=report["integrated_lufs"], true_peak_dbtp=report["true_peak_dbtp"])
+    except Exception:
+        if job:
+            try:
+                client.post({"action": "failed", "job_id": job["job_id"],
+                             "lease_token": job["lease_token"]})
+            except Exception:
+                pass
+        raise
 
 
 def run_once(client):
@@ -214,7 +267,7 @@ def run_once(client):
                 report = render(manifest_path, output)
             with phase("upload_video"):
                 client.complete(job, output, report)
-            log("ready", job_id=job["job_id"], duration_seconds=report["duration_seconds"], processing_seconds=report["processing_seconds"], bytes=report["bytes"])
+            log("ready", job_id=job["job_id"], duration_seconds=report["duration_seconds"], processing_seconds=report["processing_seconds"], bytes=report["bytes"], audio_loudness=report.get("audio_loudness"))
     except Exception as exc:
         # The bridge ignores stale failures after a committed completion.
         try:
@@ -240,6 +293,12 @@ def main():
         raise ValueError("RUN_MODE: disabled, check vagy queue lehet.")
     with phase("configuration"):
         client = Bridge(os.environ.get("VITANNA_BRIDGE_URL", ""), os.environ.get("VITANNA_WORKER_TOKEN", ""))
+    # A temporary MP3-normalization error must not block the existing video / Metricool tick.
+    try:
+        audio_client = Bridge(urllib.parse.urljoin(client.url, "napi-audio-level.php"), client.token)
+        normalize_daily(audio_client)
+    except Exception as exc:
+        log("audio_failed", **failure_details(exc))
     run_once(client)
 
 

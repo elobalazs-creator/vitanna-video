@@ -11,6 +11,89 @@ from pathlib import Path
 
 from captions import from_alignment, parse_srt, validate_captions, write_ass
 
+AUDIO_PROFILE = "vitanna-loudness-v1"
+TARGET_LUFS = -18.0
+TRUE_PEAK_DBTP = -2.0
+
+
+def audio_command(args, timeout=180):
+    try:
+        return subprocess.run(args, check=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, timeout=timeout)
+    except subprocess.CalledProcessError:
+        raise RuntimeError("A hang hangerő-kiegyenlítése nem sikerült.") from None
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("A hangfeldolgozás túllépte az időkorlátot.") from None
+
+
+def measure_audio(path):
+    result = audio_command(["ffmpeg", "-nostdin", "-hide_banner", "-nostats",
+        "-protocol_whitelist", "file,pipe", "-i", str(path), "-map", "0:a:0", "-vn",
+        "-af", f"loudnorm=I={TARGET_LUFS}:TP={TRUE_PEAK_DBTP}:LRA=11:print_format=json",
+        "-f", "null", "-"])
+    try:
+        values = json.loads(result.stderr[result.stderr.rfind("{"):])
+        values = {key: float(values[key]) for key in
+                  ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")}
+        if not all(math.isfinite(value) for value in values.values()):
+            raise ValueError()
+        if not -70 <= values["input_i"] <= 0:
+            raise ValueError()
+        return values
+    except (KeyError, ValueError, TypeError):
+        raise RuntimeError("A hang néma, túl halk vagy nem mérhető biztonságosan.") from None
+
+
+def normalize_pcm(source, target):
+    info = probe(source)
+    stream = next((s for s in info["streams"] if s["codec_type"] == "audio"), {})
+    duration = float(info["format"]["duration"])
+    if stream.get("channels") not in (1, 2) or not math.isfinite(duration) or not 1 <= duration <= 900:
+        raise ValueError("1–900 másodperces mono vagy sztereó hang szükséges.")
+    measured = measure_audio(source)
+    filters = (f"loudnorm=I={TARGET_LUFS}:TP={TRUE_PEAK_DBTP}:LRA=11:"
+        f"measured_I={measured['input_i']}:measured_TP={measured['input_tp']}:"
+        f"measured_LRA={measured['input_lra']}:measured_thresh={measured['input_thresh']}:"
+        f"offset={measured['target_offset']}:linear=true")
+    audio_command(["ffmpeg", "-nostdin", "-v", "error", "-n",
+        "-protocol_whitelist", "file,pipe", "-i", str(source), "-map", "0:a:0", "-vn",
+        "-af", filters, "-ar", "48000", "-ac", str(stream["channels"]),
+        "-c:a", "pcm_s24le", "-map_metadata", "-1", str(target)])
+    return {"profile": AUDIO_PROFILE, "target_lufs": TARGET_LUFS,
+            "true_peak_target_dbtp": TRUE_PEAK_DBTP,
+            "source_integrated_lufs": measured["input_i"],
+            "source_true_peak_dbtp": measured["input_tp"], "duration_seconds": duration}
+
+
+def check_normalized(path, duration):
+    measured = measure_audio(path)
+    actual_duration = float(probe(path)["format"]["duration"])
+    if abs(measured["input_i"] - TARGET_LUFS) > 0.8 or measured["input_tp"] > -1.0:
+        raise RuntimeError("A javított hang hangereje vagy csúcsszintje nem megfelelő.")
+    if abs(actual_duration - duration) > 0.30:
+        raise RuntimeError("A hangjavítás közben megváltozott a hang hossza.")
+    return {"integrated_lufs": measured["input_i"], "true_peak_dbtp": measured["input_tp"]}
+
+
+def normalize_mp3(source, output):
+    source, output = Path(source).resolve(), Path(output).resolve()
+    if output.suffix.lower() != ".mp3" or output.exists():
+        raise ValueError("Új .mp3 kimeneti fájlnév szükséges.")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="vitanna-audio-", dir=output.parent) as temp:
+        work = Path(temp)
+        pcm = work / "normalized.wav"
+        report = normalize_pcm(source, pcm)
+        result = work / "normalized.mp3"
+        audio_command(["ffmpeg", "-nostdin", "-v", "error", "-n", "-i", str(pcm),
+            "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "48000",
+            "-map_metadata", "-1", str(result)])
+        report.update(check_normalized(result, report["duration_seconds"]))
+        report.update({"source_sha256": sha256(source), "sha256": sha256(result),
+                       "bytes": result.stat().st_size})
+        os.link(result, output)
+    return report
+
 
 def run(args, cwd=None, timeout=90):
     try:
@@ -100,6 +183,8 @@ def render(manifest_path, output_path):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="vitanna-", dir=output_path.parent) as temp:
         work = Path(temp)
+        normalized = work / "normalized.wav"
+        loudness = normalize_pcm(audio, normalized)
         lines = ["ffconcat version 1.0"]
         total_frames = math.ceil(duration * fps)
         basic_frames, extra_frames = divmod(total_frames, len(images))
@@ -120,9 +205,9 @@ def render(manifest_path, output_path):
             lines.append(f"file '{segment_file}'")
             offset_frames += frames
         (work / "slides.ffconcat").write_text("\n".join(lines) + "\n", encoding="utf-8")
-        # Video stream copy avoids another encode; only the original audio becomes AAC.
+        # Video stream copy avoids another encode. Measured/limited PCM becomes AAC.
         remaining = max(1, int(1800 - (time.monotonic() - began)))
-        run(["ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file,pipe", "-safe", "1", "-f", "concat", "-i", "slides.ffconcat", "-protocol_whitelist", "file,pipe", "-i", str(audio), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-t", f"{duration:.6f}", "-movflags", "+faststart", "-map_metadata", "-1", "result.mp4"], cwd=work, timeout=remaining)
+        run(["ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file,pipe", "-safe", "1", "-f", "concat", "-i", "slides.ffconcat", "-protocol_whitelist", "file,pipe", "-i", str(normalized), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-t", f"{duration:.6f}", "-movflags", "+faststart", "-map_metadata", "-1", "result.mp4"], cwd=work, timeout=remaining)
         video = work / "result.mp4"
         info = probe(video)
         streams = {stream["codec_type"]: stream for stream in info["streams"]}
@@ -134,7 +219,9 @@ def render(manifest_path, output_path):
             raise RuntimeError("A kimenet hossza vagy mérete hibás.")
         if video.stat().st_size > 500 * 1024 * 1024:
             raise RuntimeError("A videó túl nagy a feltöltéshez.")
+        loudness.update(check_normalized(video, duration))
         result = {"status": "ready", "duration_seconds": round(actual_duration, 3), "width": width, "height": height, "video_codec": "h264", "audio_codec": "aac", "image_count": len(images), "caption_count": len(captions), "bytes": video.stat().st_size, "sha256": sha256(video), "processing_seconds": round(time.monotonic() - began, 3), "source_audio_sha256": sha256(audio)}
+        result["audio_loudness"] = loudness
         # Atomic, no-clobber publication on the same filesystem; retries cannot replace a file.
         os.link(video, output_path)
     output_path.with_suffix(".report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
