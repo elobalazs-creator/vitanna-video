@@ -14,7 +14,7 @@ from pathlib import Path
 
 from renderer import render, normalize_mp3, AUDIO_PROFILE
 
-WORKER_VERSION = "2026-10-20-loudness-1"
+WORKER_VERSION = "2026-10-21-branding-2"
 
 
 @contextmanager
@@ -245,7 +245,7 @@ def run_once(client):
             log("skipped", job_id=job["job_id"])
             return
         # Explicit allow-list: remote fields cannot supply local paths or output filenames.
-        local = {key: manifest[key] for key in ("schema_version", "title", "require_captions", "video", "captions") if key in manifest}
+        local = {key: manifest[key] for key in ("schema_version", "title", "publication_date", "require_captions", "video", "captions") if key in manifest}
         with tempfile.TemporaryDirectory(prefix="vitanna-worker-") as temp:
             root = Path(temp)
             with phase("download_audio"):
@@ -267,7 +267,7 @@ def run_once(client):
                 report = render(manifest_path, output)
             with phase("upload_video"):
                 client.complete(job, output, report)
-            log("ready", job_id=job["job_id"], duration_seconds=report["duration_seconds"], processing_seconds=report["processing_seconds"], bytes=report["bytes"], audio_loudness=report.get("audio_loudness"))
+            log("ready", job_id=job["job_id"], duration_seconds=report["duration_seconds"], processing_seconds=report["processing_seconds"], bytes=report["bytes"], audio_loudness=report.get("audio_loudness"), branding=report.get("branding"))
     except Exception as exc:
         # The bridge ignores stale failures after a committed completion.
         try:

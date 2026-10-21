@@ -9,12 +9,13 @@ import tempfile
 import time
 from pathlib import Path
 
-from captions import from_alignment, parse_srt, validate_captions, write_ass
+from captions import (INTRO_SECONDS, clean_text, from_alignment, parse_srt,
+                      publication_label, validate_captions, write_ass)
 
 AUDIO_PROFILE = "vitanna-loudness-v1"
 TARGET_LUFS = -18.0
 TRUE_PEAK_DBTP = -2.0
-BRANDING_PROFILE = "vitanna-logo-v1"
+BRANDING_PROFILE = "vitanna-logo-intro-v2"
 
 # Approved November 2026 cover assets, including their small versions.
 BRANDED_COVERS = frozenset({
@@ -292,6 +293,10 @@ def render(manifest_path, output_path):
     # bytes, never a filename or a guess, so an unbranded replacement gets a logo.
     already_branded = [sha256(image) in BRANDED_COVERS for image in images]
     title_top = 360 if any(already_branded) else 190
+    title = clean_text(job.get("title", ""))
+    intro_duration = min(INTRO_SECONDS, duration) if title else 0.0
+    publication_date = job.get("publication_date", "")
+    publication_label(publication_date)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="vitanna-", dir=output_path.parent) as temp:
         work = Path(temp)
@@ -310,7 +315,9 @@ def render(manifest_path, output_path):
             start, end = offset_frames / fps, (offset_frames + frames) / fps
             segment_captions = [{"start": max(c["start"], start) - start, "end": min(c["end"], end) - start, "text": c["text"]} for c in captions if min(c["end"], end) - max(c["start"], start) >= 0.01]
             subtitle_file = f"captions-{index:02}.ass"
-            write_ass(work / subtitle_file, segment_captions, job.get("title", ""), frames / fps, width, height, title_top=title_top)
+            write_ass(work / subtitle_file, segment_captions, title, frames / fps,
+                      width, height, title_top=title_top, publication_date=publication_date,
+                      segment_start=start, intro_duration=intro_duration)
             segment_file = f"segment-{index:02}.mp4"
             remaining = max(1, int(1800 - (time.monotonic() - began)))
             run(["ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file,pipe", "-loop", "1", "-framerate", "25", "-i", filename, "-vf", f"ass={subtitle_file},format=yuv420p", "-frames:v", str(frames), "-an", "-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage", "-crf", "23", "-threads", "2", segment_file], cwd=work, timeout=remaining)
@@ -337,7 +344,10 @@ def render(manifest_path, output_path):
         result["branding"] = {"profile": BRANDING_PROFILE, "logo_sha256": sha256(logo),
                               "placement": "top_left", "all_slides": True,
                               "added_to_slides": already_branded.count(False),
-                              "existing_on_slides": already_branded.count(True)}
+                              "existing_on_slides": already_branded.count(True),
+                              "intro_seconds": intro_duration,
+                              "publication_date": publication_date or None,
+                              "audio_offset_seconds": 0}
         # Atomic, no-clobber publication on the same filesystem; retries cannot replace a file.
         os.link(video, output_path)
     output_path.with_suffix(".report.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
