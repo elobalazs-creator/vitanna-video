@@ -14,7 +14,7 @@ from pathlib import Path
 
 from renderer import render, normalize_mp3, AUDIO_PROFILE, MediaProcessingError
 
-WORKER_VERSION = "2026-10-25-diagnostics-1"
+WORKER_VERSION = "2026-10-25-audio-peak-1"
 
 
 @contextmanager

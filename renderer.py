@@ -237,6 +237,41 @@ def check_normalized(path, duration):
     return {"integrated_lufs": measured["input_i"], "true_peak_dbtp": measured["input_tp"]}
 
 
+def encode_checked_audio(pcm, output, duration, codec):
+    """Validate the actual lossy stream before spending time on video frames."""
+    gain = 0.0
+    ceiling = -3.0
+    for attempt in range(1, 5):
+        candidate = output.with_name(f"{output.stem}-attempt-{attempt}{output.suffix}")
+        # Fourfold oversampling and lookahead limit transients. Disable the
+        # limiter's automatic make-up gain and compensate its lookahead delay.
+        filters = (f"volume={gain:.3f}dB,aresample=192000,"
+                   f"alimiter=limit={10 ** (ceiling / 20):.8f}:level=false:latency=true,"
+                   "aresample=48000")
+        render_step("encode_checked_audio", attempt=attempt, ceiling_dbtp=ceiling,
+                    gain_db=round(gain, 3))
+        audio_command(["ffmpeg", "-nostdin", "-v", "error", "-n",
+            "-protocol_whitelist", "file,pipe", "-i", str(pcm),
+            "-map", "0:a:0", "-vn", "-af", filters, "-c:a", codec,
+            "-b:a", "128k" if codec == "aac" else "192k", "-ar", "48000",
+            "-map_metadata", "-1", str(candidate)])
+        measured = measure_audio(candidate)
+        actual = float(probe(candidate)["format"]["duration"])
+        render_step("encoded_audio_result", attempt=attempt,
+                    integrated_lufs=measured["input_i"], true_peak_dbtp=measured["input_tp"])
+        if abs(actual - duration) > 0.30:
+            raise RuntimeError("A hangjavítás közben megváltozott a hang hossza.")
+        if abs(measured["input_i"] - TARGET_LUFS) <= 0.8 and measured["input_tp"] <= -1.0:
+            os.link(candidate, output)
+            return {"integrated_lufs": measured["input_i"],
+                    "true_peak_dbtp": measured["input_tp"], "encoding_attempts": attempt}
+        if measured["input_tp"] > -1.0:
+            ceiling -= 1.0
+        # Every retry starts from the original PCM, not another lossy encode.
+        gain = max(-6.0, min(6.0, gain + TARGET_LUFS - measured["input_i"]))
+    raise RuntimeError("A javított hang hangereje vagy csúcsszintje nem megfelelő.")
+
+
 def normalize_mp3(source, output):
     source, output = Path(source).resolve(), Path(output).resolve()
     if output.suffix.lower() != ".mp3" or output.exists():
@@ -247,10 +282,7 @@ def normalize_mp3(source, output):
         pcm = work / "normalized.wav"
         report = normalize_pcm(source, pcm)
         result = work / "normalized.mp3"
-        audio_command(["ffmpeg", "-nostdin", "-v", "error", "-n", "-i", str(pcm),
-            "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "48000",
-            "-map_metadata", "-1", str(result)])
-        report.update(check_normalized(result, report["duration_seconds"]))
+        report.update(encode_checked_audio(pcm, result, report["duration_seconds"], "libmp3lame"))
         report.update({"source_sha256": sha256(source), "sha256": sha256(result),
                        "bytes": result.stat().st_size})
         os.link(result, output)
@@ -357,6 +389,8 @@ def render(manifest_path, output_path):
         normalized = work / "normalized.wav"
         loudness = normalize_pcm(audio, normalized)
         render_step("audio_normalized", elapsed_seconds=round(time.monotonic() - began, 3))
+        encoded_audio = work / "checked-audio.m4a"
+        loudness.update(encode_checked_audio(normalized, encoded_audio, duration, "aac"))
         lines = ["ffconcat version 1.0"]
         total_frames = math.ceil(duration * fps)
         basic_frames, extra_frames = divmod(total_frames, len(images))
@@ -384,9 +418,9 @@ def render(manifest_path, output_path):
             offset_frames += frames
         (work / "slides.ffconcat").write_text("\n".join(lines) + "\n", encoding="utf-8")
         render_step("mux_video_audio")
-        # Video stream copy avoids another encode. Measured/limited PCM becomes AAC.
+        # Copy both checked streams; do not encode the audio again at mux time.
         remaining = max(1, int(1800 - (time.monotonic() - began)))
-        run(["ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file,pipe", "-safe", "1", "-f", "concat", "-i", "slides.ffconcat", "-protocol_whitelist", "file,pipe", "-i", str(normalized), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-t", f"{duration:.6f}", "-movflags", "+faststart", "-map_metadata", "-1", "result.mp4"], cwd=work, timeout=remaining)
+        run(["ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file,pipe", "-safe", "1", "-f", "concat", "-i", "slides.ffconcat", "-protocol_whitelist", "file,pipe", "-i", str(encoded_audio), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "copy", "-t", f"{duration:.6f}", "-movflags", "+faststart", "-map_metadata", "-1", "result.mp4"], cwd=work, timeout=remaining)
         video = work / "result.mp4"
         render_step("verify_output")
         info = probe(video)
