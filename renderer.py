@@ -82,6 +82,56 @@ BRANDED_COVERS = frozenset({
 })
 
 
+
+class MediaProcessingError(RuntimeError):
+    """Fixed diagnostic codes only: never expose FFmpeg arguments or raw stderr."""
+    def __init__(self, reason, exit_code=None, timeout_seconds=None):
+        messages = {
+            'timeout': 'A médiafeldolgozás túllépte a futási időkorlátot.',
+            'memory': 'A médiafeldolgozó nem tudott elegendő memóriát lefoglalni.',
+            'disk_full': 'Elfogyott a médiafeldolgozás ideiglenes tárhelye.',
+            'invalid_input': 'A médiafeldolgozó hibás vagy nem olvasható bemenetet talált.',
+            'missing_filter': 'A szükséges FFmpeg-szűrő nem érhető el.',
+            'missing_encoder': 'A szükséges videó- vagy hangkódoló nem érhető el.',
+            'filter_failed': 'A kép- vagy feliratszűrő feldolgozása hibával leállt.',
+            'killed': 'A médiafeldolgozó folyamatot SIGKILL jel állította le. Az okot a Render erőforrásnaplója mutathatja meg.',
+            'process_failed': 'A médiafeldolgozó hibakóddal leállt.',
+        }
+        reason = reason if reason in messages else 'process_failed'
+        super().__init__(messages[reason])
+        self.media_reason = reason
+        self.exit_code = exit_code
+        self.timeout_seconds = timeout_seconds
+
+
+def media_failure(exc):
+    raw = exc.stderr or ''
+    if isinstance(raw, bytes):
+        raw = raw.decode('utf-8', errors='replace')
+    raw = raw.lower()
+    reason = 'process_failed'
+    for text, code in (
+        ('cannot allocate memory', 'memory'), ('out of memory', 'memory'),
+        ('no space left on device', 'disk_full'),
+        ('invalid data found', 'invalid_input'), ('error opening input', 'invalid_input'),
+        ('no such filter', 'missing_filter'), ('unknown encoder', 'missing_encoder'),
+        ('error reinitializing filters', 'filter_failed'),
+        ('failed to configure output pad', 'filter_failed'),
+    ):
+        if text in raw:
+            reason = code
+            break
+    if exc.returncode in (-9, 137):
+        reason = 'killed'
+    return MediaProcessingError(reason, exit_code=exc.returncode)
+
+
+def render_step(stage, **numbers):
+    """Call sites pass fixed stage names and numeric diagnostics only."""
+    print(json.dumps({'event': 'render_step', 'stage': stage, **numbers},
+                     ensure_ascii=False, allow_nan=False), flush=True)
+
+
 def branding_logo():
     """The deployment supplies the same brand asset for every daily video."""
     path = Path(__file__).resolve().with_name("vitanna-logo.png")
@@ -128,10 +178,10 @@ def audio_command(args, timeout=180):
     try:
         return subprocess.run(args, check=True, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True, timeout=timeout)
-    except subprocess.CalledProcessError:
-        raise RuntimeError("A hang hangerő-kiegyenlítése nem sikerült.") from None
+    except subprocess.CalledProcessError as exc:
+        raise media_failure(exc) from None
     except subprocess.TimeoutExpired:
-        raise RuntimeError("A hangfeldolgozás túllépte az időkorlátot.") from None
+        raise MediaProcessingError("timeout", timeout_seconds=timeout) from None
 
 
 def measure_audio(path):
@@ -158,7 +208,9 @@ def normalize_pcm(source, target):
     duration = float(info["format"]["duration"])
     if stream.get("channels") not in (1, 2) or not math.isfinite(duration) or not 1 <= duration <= 900:
         raise ValueError("1–900 másodperces mono vagy sztereó hang szükséges.")
+    render_step("measure_source_audio", duration_seconds=round(duration, 3))
     measured = measure_audio(source)
+    render_step("normalize_audio", source_lufs=measured["input_i"], source_peak_dbtp=measured["input_tp"])
     filters = (f"loudnorm=I={TARGET_LUFS}:TP={TRUE_PEAK_DBTP}:LRA=11:"
         f"measured_I={measured['input_i']}:measured_TP={measured['input_tp']}:"
         f"measured_LRA={measured['input_lra']}:measured_thresh={measured['input_thresh']}:"
@@ -174,8 +226,10 @@ def normalize_pcm(source, target):
 
 
 def check_normalized(path, duration):
+    render_step("verify_loudness")
     measured = measure_audio(path)
     actual_duration = float(probe(path)["format"]["duration"])
+    render_step("loudness_result", integrated_lufs=measured["input_i"], true_peak_dbtp=measured["input_tp"], duration_seconds=round(actual_duration, 3), expected_duration_seconds=round(duration, 3))
     if abs(measured["input_i"] - TARGET_LUFS) > 0.8 or measured["input_tp"] > -1.0:
         raise RuntimeError("A javított hang hangereje vagy csúcsszintje nem megfelelő.")
     if abs(actual_duration - duration) > 0.30:
@@ -207,10 +261,9 @@ def run(args, cwd=None, timeout=90):
     try:
         return subprocess.run(args, cwd=cwd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout).stdout
     except subprocess.CalledProcessError as exc:
-        # Local safe filenames only; no signed asset URLs or tokens in FFmpeg arguments.
-        raise RuntimeError("Médiafeldolgozási hiba: " + exc.stderr[-2500:]) from None
+        raise media_failure(exc) from None
     except subprocess.TimeoutExpired:
-        raise RuntimeError("A médiafeldolgozás túllépte a futási időkorlátot.") from None
+        raise MediaProcessingError("timeout", timeout_seconds=timeout) from None
 
 
 def probe(path):
@@ -241,6 +294,7 @@ def asset(root, spec, max_bytes):
 
 def render(manifest_path, output_path):
     began = time.monotonic()
+    render_step("validate_inputs")
     manifest_path, output_path = Path(manifest_path).resolve(), Path(output_path).resolve()
     if manifest_path.stat().st_size > 2 * 1024 * 1024:
         raise ValueError("Túl nagy feladatleíró.")
@@ -302,6 +356,7 @@ def render(manifest_path, output_path):
         work = Path(temp)
         normalized = work / "normalized.wav"
         loudness = normalize_pcm(audio, normalized)
+        render_step("audio_normalized", elapsed_seconds=round(time.monotonic() - began, 3))
         lines = ["ffconcat version 1.0"]
         total_frames = math.ceil(duration * fps)
         basic_frames, extra_frames = divmod(total_frames, len(images))
@@ -310,30 +365,37 @@ def render(manifest_path, output_path):
         # through an fps filter can otherwise queue thousands of raw Full HD frames.
         for index, image in enumerate(images):
             filename = f"slide-{index:02}.png"
+            render_step("prepare_slide", slide=index + 1, slide_count=len(images))
             branded_slide(image, logo, width, height, work / filename, already_branded[index])
             frames = basic_frames + (1 if index < extra_frames else 0)
             start, end = offset_frames / fps, (offset_frames + frames) / fps
             segment_captions = [{"start": max(c["start"], start) - start, "end": min(c["end"], end) - start, "text": c["text"]} for c in captions if min(c["end"], end) - max(c["start"], start) >= 0.01]
             subtitle_file = f"captions-{index:02}.ass"
+            render_step("prepare_captions", slide=index + 1, caption_count=len(segment_captions))
             write_ass(work / subtitle_file, segment_captions, title, frames / fps,
                       width, height, title_top=title_top, publication_date=publication_date,
                       segment_start=start, intro_duration=intro_duration)
             segment_file = f"segment-{index:02}.mp4"
             remaining = max(1, int(1800 - (time.monotonic() - began)))
+            render_step("encode_slide", slide=index + 1, duration_seconds=round(frames / fps, 3), timeout_seconds=remaining)
             run(["ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file,pipe", "-loop", "1", "-framerate", "25", "-i", filename, "-vf", f"ass={subtitle_file},format=yuv420p", "-frames:v", str(frames), "-an", "-c:v", "libx264", "-preset", "veryfast", "-tune", "stillimage", "-crf", "23", "-threads", "2", segment_file], cwd=work, timeout=remaining)
+            render_step("slide_encoded", slide=index + 1, elapsed_seconds=round(time.monotonic() - began, 3))
             lines.append(f"file '{segment_file}'")
             offset_frames += frames
         (work / "slides.ffconcat").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        render_step("mux_video_audio")
         # Video stream copy avoids another encode. Measured/limited PCM becomes AAC.
         remaining = max(1, int(1800 - (time.monotonic() - began)))
         run(["ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file,pipe", "-safe", "1", "-f", "concat", "-i", "slides.ffconcat", "-protocol_whitelist", "file,pipe", "-i", str(normalized), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-t", f"{duration:.6f}", "-movflags", "+faststart", "-map_metadata", "-1", "result.mp4"], cwd=work, timeout=remaining)
         video = work / "result.mp4"
+        render_step("verify_output")
         info = probe(video)
         streams = {stream["codec_type"]: stream for stream in info["streams"]}
         v, a = streams.get("video", {}), streams.get("audio", {})
         if v.get("codec_name") != "h264" or a.get("codec_name") != "aac":
             raise RuntimeError("A kimenet nem H.264/AAC videó.")
         actual_duration = float(info["format"]["duration"])
+        render_step("output_result", duration_seconds=round(actual_duration, 3), expected_duration_seconds=round(duration, 3), width=v.get("width", 0), height=v.get("height", 0), bytes=video.stat().st_size)
         if abs(actual_duration - duration) > 0.30 or (v.get("width"), v.get("height")) != (width, height):
             raise RuntimeError("A kimenet hossza vagy mérete hibás.")
         if video.stat().st_size > 500 * 1024 * 1024:

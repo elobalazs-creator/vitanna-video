@@ -12,9 +12,9 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from renderer import render, normalize_mp3, AUDIO_PROFILE
+from renderer import render, normalize_mp3, AUDIO_PROFILE, MediaProcessingError
 
-WORKER_VERSION = "2026-10-21-branding-2"
+WORKER_VERSION = "2026-10-25-diagnostics-1"
 
 
 @contextmanager
@@ -33,7 +33,14 @@ def failure_details(exc):
     details = {"error_type": type(exc).__name__,
                "stage": getattr(exc, "vitanna_stage", "validation"),
                "worker_version": WORKER_VERSION}
-    if isinstance(exc, urllib.error.HTTPError):
+    if isinstance(exc, MediaProcessingError):
+        details["message"] = str(exc)
+        details["media_reason"] = exc.media_reason
+        if exc.exit_code is not None:
+            details["exit_code"] = exc.exit_code
+        if exc.timeout_seconds is not None:
+            details["timeout_seconds"] = exc.timeout_seconds
+    elif isinstance(exc, urllib.error.HTTPError):
         details["http_status"] = exc.code
         hints = {
             400: "A szerver hibásnak találta a kérést.",
@@ -71,6 +78,48 @@ def failure_details(exc):
         # Exact allow-list of our own messages. Never print arbitrary exception
         # text: it may contain URLs, tokens, server bodies or article contents.
         safe_messages = {
+            '1–12 háttérkép szükséges.',
+            '1–900 másodperces mono vagy sztereó hang szükséges.',
+            'A VitAnna-logó érvénytelen PNG-fájl.',
+            'A cikk megjelenési dátuma ÉÉÉÉ-HH-NN formátumú legyen.',
+            'A cikk megjelenési dátuma érvénytelen.',
+            'A cím legfeljebb 180 karakter lehet.',
+            'A cím nem fér el olvashatóan a nyitóképen.',
+            'A felirat szövege nem szöveg.',
+            'A hang hossza 1–900 másodperc lehet.',
+            'A hang néma, túl halk vagy nem mérhető biztonságosan.',
+            'A hangjavítás közben megváltozott a hang hossza.',
+            'A javított hang hangereje vagy csúcsszintje nem megfelelő.',
+            'A kimenet .mp4 fájl legyen.',
+            'A kimenet hossza vagy mérete hibás.',
+            'A kimenet nem H.264/AAC videó.',
+            'A kész videót nem írjuk felül; adj új kimeneti fájlnevet.',
+            'A médiafájl ellenőrzőösszege eltér.',
+            'A médiafájlnak a feladat könyvtárán belül kell lennie.',
+            'A támogatott felbontás 1920×1080 vagy 1280×720.',
+            'A videó túl nagy a feltöltéshez.',
+            'Az MP3/fájl nem tartalmaz hangsávot.',
+            'Csak PNG, JPEG és WebP háttérkép használható.',
+            'Egyszerre csak egy feliratforrás adható meg.',
+            'Hibás ElevenLabs karakter-időzítés.',
+            'Hibás SRT felirat.',
+            'Hibás SRT időzítés.',
+            'Hibás SRT perc/másodperc.',
+            'Hibás karakter vagy idő az ElevenLabs-időzítésben.',
+            'Hibás vagy túl sok felirat.',
+            'Hiányzik a vitanna-logo.png. A logót és a Dockerfile-t is töltsd fel, majd indíts új buildet.',
+            'Hiányzik az időzített felirat; néma vagy felirat nélküli helyettesítő nem készül.',
+            'Hiányzó helyi médiafájl.',
+            'Ismeretlen feladatverzió.',
+            'Túl nagy feladatleíró.',
+            'Túl nagy képfelbontás.',
+            'Átfedő vagy a hang hosszán kívüli felirat.',
+            'Érvénytelen feliratidő.',
+            'Új .mp3 kimeneti fájlnév szükséges.',
+            'Üres vagy túl hosszú ElevenLabs időzítés.',
+            'Üres vagy túl hosszú feliratblokk (legfeljebb 160 karakter).',
+            'Üres vagy túl nagy médiafájl.',
+
             "Átirányítás nem engedélyezett a média- és feladatkapcsolatnál.",
             "A bridge címe HTTPS-cím legyen, lekérdezés és belépési adat nélkül.",
             "Legalább 32 karakteres külön worker-token szükséges.",
@@ -80,7 +129,7 @@ def failure_details(exc):
             "A letöltött fájl hibás vagy nem a várt változat.",
             "A szerver nem igazolta vissza a teljes videó átvételét.",
         }
-        if type(exc) is ValueError and str(exc) in safe_messages:
+        if type(exc) in (ValueError, RuntimeError, FileExistsError) and str(exc) in safe_messages:
             details["message"] = str(exc)
     return details
 
