@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
 
 from captions import (INTRO_SECONDS, clean_text, from_alignment, parse_srt,
                       publication_label, validate_captions, write_ass)
@@ -190,7 +191,7 @@ def measure_audio(path):
         "-af", f"loudnorm=I={TARGET_LUFS}:TP={TRUE_PEAK_DBTP}:LRA=11:print_format=json",
         "-f", "null", "-"])
     try:
-        values = json.loads(result.stderr[result.stderr.rfind("{"):])
+        values, _ = json.JSONDecoder().raw_decode(result.stderr[result.stderr.rfind("{"):])
         values = {key: float(values[key]) for key in
                   ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")}
         if not all(math.isfinite(value) for value in values.values()):
@@ -324,6 +325,75 @@ def asset(root, spec, max_bytes):
     return path
 
 
+def outro_card(logo, width, height, output):
+    """Exact brand text, local fonts/logo; no paid image generation."""
+    scale = height / 1080
+    im = Image.new("RGB", (width, height), "#203a31")
+    draw = ImageDraw.Draw(im)
+    mark = Image.open(logo).convert("RGBA")
+    mark.thumbnail((round(650 * scale), round(220 * scale)))
+    pad = round(30 * scale)
+    x, y = (width - mark.width) // 2, round(110 * scale)
+    draw.rounded_rectangle((x-pad, y-pad, x+mark.width+pad, y+mark.height+pad),
+                           radius=round(22*scale), fill="#f8f7f1")
+    im.paste(mark, (x, y), mark)
+    for text, size, pos, color in [
+        ("Találkozzunk holnap is!", 68, 425, "#f8f7f1"),
+        ("Írd meg a gondolataidat a videó alatt.", 38, 540, "#ddccaf"),
+        ("vitanna.eu", 80, 650, "#ddccaf"),
+    ]:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", round(size*scale))
+        draw.text((width/2, pos*scale), text, font=font, anchor="mt", fill=color)
+    im.save(output)
+
+
+def bounded_alignment(data, duration):
+    # ElevenLabs may place a few trailing characters just past the audio.
+    # Repair only a <=0.5s overrun in the last 16 characters. Never alter audio.
+    aligned = data.get("normalized_alignment") or data.get("alignment") or data
+    aligned = dict(aligned)
+    chars = aligned.get("characters", [])
+    starts = list(aligned.get("character_start_times_seconds", []))
+    ends = list(aligned.get("character_end_times_seconds", []))
+    if not chars or len(chars) != len(starts) or len(chars) != len(ends):
+        raise ValueError("Hibás ElevenLabs karakter-időzítés.")
+    previous = 0.0
+    changed = 0
+    for i, (start, end) in enumerate(zip(starts, ends)):
+        start, end = float(start), float(end)
+        if not math.isfinite(start) or not math.isfinite(end) or start < previous or start < 0 or end < start:
+            raise ValueError("Hibás karakter vagy idő az ElevenLabs-időzítésben.")
+        previous = start
+        if end > duration:
+            if i < max(0, len(chars)-16) or end-duration > 0.5 + 1e-6:
+                raise ValueError("A felirat jelentősen túlnyúlik a hangon.")
+            starts[i], ends[i] = min(start, max(0, duration-0.001)), duration
+            changed += 1
+    aligned["character_start_times_seconds"] = starts
+    aligned["character_end_times_seconds"] = ends
+    if changed:
+        render_step("alignment_tail_adjusted", characters=changed)
+    return from_alignment(aligned)
+
+
+def append_outro(main_pcm, outro_pcm, output):
+    # Concatenate samples at their original rate; no atempo, rubberband or trim.
+    main_seconds = float(probe(main_pcm)["format"]["duration"])
+    outro_seconds = float(probe(outro_pcm)["format"]["duration"])
+    filters = ("[0:a]aformat=sample_rates=48000:channel_layouts=stereo[m];"
+               "anullsrc=r=48000:cl=stereo,atrim=duration=0.5[g];"
+               "[1:a]aformat=sample_rates=48000:channel_layouts=stereo[o];"
+               "anullsrc=r=48000:cl=stereo,atrim=duration=1[t];"
+               "[m][g][o][t]concat=n=4:v=0:a=1[out]")
+    audio_command(["ffmpeg", "-nostdin", "-v", "error", "-n", "-i", str(main_pcm),
+                   "-i", str(outro_pcm), "-filter_complex", filters, "-map", "[out]",
+                   "-c:a", "pcm_s24le", "-ar", "48000", str(output)])
+    actual = float(probe(output)["format"]["duration"])
+    if abs(actual-(main_seconds+outro_seconds+1.5)) > 0.002:
+        raise RuntimeError("A lezárás összefűzése közben megváltozott a hang hossza.")
+    return main_seconds + 0.5, actual
+
+
 def render(manifest_path, output_path):
     began = time.monotonic()
     render_step("validate_inputs")
@@ -343,6 +413,13 @@ def render(manifest_path, output_path):
     duration = float(audio_info["format"]["duration"])
     if not math.isfinite(duration) or not 1 <= duration <= 900:
         raise ValueError("A hang hossza 1–900 másodperc lehet.")
+    outro_audio = None
+    if "outro_audio" in job or "outro_alignment" in job:
+        outro_audio = asset(root, job.get("outro_audio"), 20 * 1024 * 1024)
+        outro_timing = asset(root, job.get("outro_alignment"), 1024 * 1024)
+        outro_seconds = float(probe(outro_audio)["format"]["duration"])
+        if not math.isfinite(outro_seconds) or not 1 <= outro_seconds <= 120:
+            raise ValueError("A lezárás hangja 1–120 másodperc lehet.")
     specs = job.get("images")
     if not isinstance(specs, list) or not 1 <= len(specs) <= 12:
         raise ValueError("1–12 háttérkép szükséges.")
@@ -366,7 +443,7 @@ def render(manifest_path, output_path):
     if "srt" in job:
         captions = parse_srt(asset(root, job["srt"], 2 * 1024 * 1024).read_text(encoding="utf-8-sig"))
     if "elevenlabs_alignment" in job:
-        captions = from_alignment(json.loads(asset(root, job["elevenlabs_alignment"], 4 * 1024 * 1024).read_text(encoding="utf-8")))
+        captions = bounded_alignment(json.loads(asset(root, job["elevenlabs_alignment"], 4 * 1024 * 1024).read_text(encoding="utf-8")), duration)
     captions = validate_captions(captions, duration)
     if job.get("require_captions", True) and not captions:
         raise ValueError("Hiányzik az időzített felirat; néma vagy felirat nélküli helyettesítő nem készül.")
@@ -389,24 +466,49 @@ def render(manifest_path, output_path):
         normalized = work / "normalized.wav"
         loudness = normalize_pcm(audio, normalized)
         render_step("audio_normalized", elapsed_seconds=round(time.monotonic() - began, 3))
+        outro_start = None
+        main_duration = duration
+        if outro_audio is not None:
+            outro_pcm = work / "outro.wav"
+            normalize_pcm(outro_audio, outro_pcm)
+            joined = work / "with-outro.wav"
+            outro_start, duration = append_outro(normalized, outro_pcm, joined)
+            outro_actual = float(probe(outro_pcm)["format"]["duration"])
+            outro_captions = validate_captions(bounded_alignment(
+                json.loads(outro_timing.read_text(encoding="utf-8")), outro_actual), outro_actual)
+            if not outro_captions:
+                raise ValueError("Hiányzik a lezárás időzített felirata.")
+            captions += [{"start": c["start"]+outro_start, "end": c["end"]+outro_start,
+                          "text": c["text"]} for c in outro_captions]
+            normalized = joined
+            loudness["duration_seconds"] = duration
+            card = work / "outro-card.png"
+            outro_card(logo, width, height, card)
         encoded_audio = work / "checked-audio.m4a"
         loudness.update(encode_checked_audio(normalized, encoded_audio, duration, "aac"))
         lines = ["ffconcat version 1.0"]
         total_frames = math.ceil(duration * fps)
-        basic_frames, extra_frames = divmod(total_frames, len(images))
+        main_frames = math.ceil(outro_start * fps) if outro_start is not None else total_frames
+        basic_frames, extra_frames = divmod(main_frames, len(images))
+        spans = [(image, basic_frames + (1 if index < extra_frames else 0), False)
+                 for index, image in enumerate(images)]
+        if outro_start is not None:
+            spans.append((card, total_frames-main_frames, True))
         offset_frames = 0
         # Encode each still-image span as a bounded stream. Long sparse-image PTS gaps
         # through an fps filter can otherwise queue thousands of raw Full HD frames.
-        for index, image in enumerate(images):
+        for index, (image, frames, is_outro) in enumerate(spans):
             filename = f"slide-{index:02}.png"
             render_step("prepare_slide", slide=index + 1, slide_count=len(images))
-            branded_slide(image, logo, width, height, work / filename, already_branded[index])
-            frames = basic_frames + (1 if index < extra_frames else 0)
+            if is_outro:
+                (work / filename).write_bytes(image.read_bytes())
+            else:
+                branded_slide(image, logo, width, height, work / filename, already_branded[index])
             start, end = offset_frames / fps, (offset_frames + frames) / fps
             segment_captions = [{"start": max(c["start"], start) - start, "end": min(c["end"], end) - start, "text": c["text"]} for c in captions if min(c["end"], end) - max(c["start"], start) >= 0.01]
             subtitle_file = f"captions-{index:02}.ass"
             render_step("prepare_captions", slide=index + 1, caption_count=len(segment_captions))
-            write_ass(work / subtitle_file, segment_captions, title, frames / fps,
+            write_ass(work / subtitle_file, segment_captions, "" if is_outro else title, frames / fps,
                       width, height, title_top=title_top, publication_date=publication_date,
                       segment_start=start, intro_duration=intro_duration)
             segment_file = f"segment-{index:02}.mp4"
@@ -436,6 +538,11 @@ def render(manifest_path, output_path):
             raise RuntimeError("A videó túl nagy a feltöltéshez.")
         loudness.update(check_normalized(video, duration))
         result = {"status": "ready", "duration_seconds": round(actual_duration, 3), "width": width, "height": height, "video_codec": "h264", "audio_codec": "aac", "image_count": len(images), "caption_count": len(captions), "bytes": video.stat().st_size, "sha256": sha256(video), "processing_seconds": round(time.monotonic() - began, 3), "source_audio_sha256": sha256(audio)}
+        result["outro"] = {"included": outro_audio is not None,
+                           "start_seconds": outro_start,
+                           "main_audio_duration_seconds": main_duration,
+                           "audio_sha256": sha256(outro_audio) if outro_audio else None,
+                           "tempo": 1.0}
         result["audio_loudness"] = loudness
         result["branding"] = {"profile": BRANDING_PROFILE, "logo_sha256": sha256(logo),
                               "placement": "top_left", "all_slides": True,

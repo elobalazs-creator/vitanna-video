@@ -14,7 +14,7 @@ from pathlib import Path
 
 from renderer import render, normalize_mp3, AUDIO_PROFILE, MediaProcessingError
 
-WORKER_VERSION = "2026-10-25-audio-peak-1"
+WORKER_VERSION = "2026-11-17-topic-outro-1"
 
 
 @contextmanager
@@ -272,7 +272,7 @@ def normalize_daily(client):
 
 def run_once(client):
     with phase("claim"):
-        response = client.post({"action": "claim", "worker_id": str(uuid.uuid4()), "lease_seconds": 7200})
+        response = client.post({"action": "claim", "worker_id": str(uuid.uuid4()), "lease_seconds": 7200, "outro_version": 1})
     if "job" not in response:
         raise ValueError("Hiányzik a job mező a szerverválaszból.")
     job = response["job"]
@@ -299,6 +299,10 @@ def run_once(client):
             root = Path(temp)
             with phase("download_audio"):
                 local["audio"] = client.download(manifest.get("audio"), root / "audio.bin", 100 * 1024 * 1024)
+            if "outro_audio" in manifest or "outro_alignment" in manifest:
+                with phase("download_outro"):
+                    local["outro_audio"] = client.download(manifest.get("outro_audio"), root / "outro.mp3", 20 * 1024 * 1024)
+                    local["outro_alignment"] = client.download(manifest.get("outro_alignment"), root / "outro.json", 1024 * 1024)
             images = manifest.get("images")
             if not isinstance(images, list) or not 1 <= len(images) <= 12:
                 raise ValueError("1–12 kép szükséges.")
